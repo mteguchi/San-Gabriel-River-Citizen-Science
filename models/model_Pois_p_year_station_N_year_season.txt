@@ -1,0 +1,32 @@
+# JAGS model to determine how year, month, and stations affected the green turtle
+# counts along San Gabriel River, Long Beach, CA
+
+# Tomo Eguchi
+
+model{
+
+	for (k in 1:n.line){
+		n[k] ~ dpois(mu.n[k])
+		
+		# This model has year- station-specific ps
+		mu.n[k] <- p[Year[k], Station[k]] * theta * N[Year[k], Season[k]]
+	
+		loglik[k] <- logdensity.pois(n[k], mu.n[k])
+	}
+
+	theta ~ dbeta(1,1)
+	
+	for (y in 1:n.year){
+		for (i in 1:10){
+			p[y,i] ~ dbeta(1,1)
+	
+		}
+	}
+	
+	for (y in 1:n.year){
+		for (s in 1:n.season){
+			N[y,s] ~ dunif(Nmin, Nmax)
+		}
+	}
+
+}

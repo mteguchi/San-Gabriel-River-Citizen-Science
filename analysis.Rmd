@@ -1,0 +1,200 @@
+---
+title: "Data analysis"
+output: html_notebook
+---
+
+
+
+```{r setup}
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(jagsUI)
+library(bayesplot)
+library(rstan)
+library(rstanarm)
+library(loo)
+library(flextable)
+
+compute.LOOIC <- function(loglik.mat, data.vector, MCMC.params){
+  n.per.chain <- (MCMC.params$n.samples - MCMC.params$n.burnin)/MCMC.params$n.thin
+  
+  #loglik.vec <- as.vector(loglik)
+  
+  # each column corresponds to a data point and rows are MCMC samples
+  #loglik.mat <- matrix(loglik.vec, nrow = n.per.chain * MCMC.params$n.chains)
+  # take out the columns that correspond to missing data points
+  loglik.mat <- loglik.mat[, !is.na(data.vector)]
+  
+  Reff <- relative_eff(exp(loglik.mat),
+                       chain_id = rep(1:MCMC.params$n.chains,
+                                      each = n.per.chain),
+                       cores = 4)
+  
+  loo.out <- rstanarm::loo(loglik.mat, 
+                           r_eff = Reff, 
+                           cores = 4, k_threshold = 0.7)
+  
+  out.list <- list(Reff = Reff,
+                   loo.out = loo.out)
+  
+  return(out.list)  
+}
+
+```
+
+Get data and make numerical months and numerical seasons
+
+```{r}
+col.def <- cols(Year = col_integer(),
+                Season = col_character(),
+                Month = col_character(),
+                Station = col_integer(),
+                Counts = col_integer())
+
+# month.name is a built-in variable
+data.0 <- read_csv(file = "data/sightings-1.csv", col_types = col.def) %>%
+  mutate(Year_d = Year - min(Year) + 1,
+         Month_d = match(Month, month.name),
+         Season_d = match(Season, c("Winter", "Spring", "Summer", "Fall"))) 
+
+
+
+```
+
+
+Models may include the abundance ($N$), sighting probability ($\theta_{y,m,i}$, where $y$ is year, $m$ is month, $i$ is station), proportions that distribute $N$ among stations ($p_{y,m,i}$, and observed counts ($n_{y,m,i}$). The objective is to find differences in counts among stations. I'm going to assume that the sighting probability among stations, months, and years are constant, because people were shuffled around among stations (assuming...). So, $\theta_{y,m,i} = \theta$  $\forall$ $y, m, i$. We may include year specific sighting probability, considering that people might increased their sighting skill over the years ($\theta_{y}$).
+
+$$ n_{y,m,i} \sim f(p_{y,m,i} \times N_{y} \times \theta) $$
+
+Because $n$ are counts, Poisson may be the first candidate model.
+
+```{r}
+MCMC.params <- list(n.chains = 5,
+                    n.samples = 100000,
+                    n.burnin = 80000,
+                    n.thin = 5)
+
+jags.data <- list(n = data.0$Counts,
+                  log.n = log(data.0$Counts + 1),
+                  n.line = nrow(data.0),
+                  n.year = max(data.0$Year_d),
+                  Year = data.0$Year_d,
+                  Month = data.0$Month_d,
+                  Station = data.0$Station,
+                  Season = data.0$Season_d,
+                  n.season = 4,
+                  Nmin = 0, Nmax = 150)
+
+jags.params <- c("n", "theta", "p", "N", "sd.n", 
+                 "deviance", "loglik")
+
+# model.file <- "models/model_Pois_p_year_month_station_N_year_season.txt"
+# model.file <- "models/model_Pois_p_year_month_station_N_year.txt"
+# model.file <- "models/model_Pois_p_year_station_N_year_season.txt"
+# model.file <- "models/model_Pois_p_year_station_N_year.txt"
+# model.file <- "models/model_Pois_p_station_N_year_season.txt"
+# model.file <- "models/model_Pois_p_station_N_year.txt"
+
+model.files <- c("models/model_Pois_p_year_month_station_N_year_season.txt",
+                 "models/model_Pois_p_year_month_station_N_year.txt",
+                 "models/model_Pois_p_year_station_N_year_season.txt",
+                 "models/model_Pois_p_year_station_N_year.txt",
+                 "models/model_Pois_p_station_N_year_season.txt",
+                 "models/model_Pois_p_station_N_year.txt",
+                 "models/model_logN_p_year_month_station_N_year_season.txt",
+                 "models/model_logN_p_year_month_station_N_year.txt",
+                 "models/model_logN_p_year_station_N_year_season.txt",
+                 "models/model_logN_p_year_station_N_year.txt",
+                 "models/model_logN_p_station_N_year_season.txt",
+                 "models/model_logN_p_station_N_year.txt")
+
+
+
+jags.fit <- list()
+LOOIC.out <- list()
+out.file.name <- "RData/jags_out.rds"
+
+if (!file.exists(out.file.name)){
+  k <- 7
+  start.time <- now()
+  for (k in 1:length(model.files)){
+    
+    jags.fit[[k]] <- jags(jags.data,
+                          inits = NULL,
+                          parameters.to.save= jags.params,
+                          model.file = model.files[k],
+                          n.chains = MCMC.params$n.chains,
+                          n.burnin = MCMC.params$n.burnin,
+                          n.thin = MCMC.params$n.thin,
+                          n.iter = MCMC.params$n.samples,
+                          DIC = T, parallel=T)
+    
+    LOOIC.out[[k]] <- compute.LOOIC(loglik.mat = jags.fit[[k]]$sims.list$loglik,
+                                    data.vector = jags.data$n,
+                                    MCMC.params = MCMC.params)
+  }
+  end.time <- now()
+  
+  out.list <- list(model.names = model.files,
+                   jm.out = jags.fit,
+                   LOOIC.out = LOOIC.out,
+                   jags.data = jags.data,
+                   jags.params = jags.params,
+                   MCMC.params = MCMC.params,
+                   run.date = Sys.Date(),
+                   system = Sys.info(),
+                   run.time = end.time - start.time)
+  
+  saveRDS(out.list, file = out.file.name)
+} else {
+  
+  out.list <- readRDS(out.file.name)
+}
+
+LOOIC.df <- data.frame(model = out.list$model.names,
+                     DIC = lapply(out.list$jm.out, 
+                                  FUN = function(x) x$DIC) %>% unlist(),
+                     Rhat = lapply(out.list$jm.out, 
+                                   FUN = function(x) x$Rhat %>% unlist() %>% 
+                                     max(na.rm = T)) %>% unlist(),
+                     LOOIC = lapply(out.list$LOOIC.out, 
+                                      FUN = function(x) x$loo.out$estimates["looic", "Estimate"]) %>% 
+                       unlist(),
+                     max.pareto = lapply(out.list$LOOIC.out, 
+                                           FUN = function(x) x$loo.out$diagnostics$pareto_k %>% max()) %>%
+                       unlist()
+                     ) %>%
+  mutate(dDIC = DIC - min(DIC),
+         dLOOIC = LOOIC - min(LOOIC)) %>%
+  select(-c("DIC", "LOOIC")) %>%
+  arrange(dLOOIC) %>% 
+  select(model, Rhat, dDIC, dLOOIC, max.pareto)
+  
+
+
+```
+
+
+Interesting results came back when fitting these `r length(model.files)` models to the data \@ref(tab:LOOIC.table). 
+
+
+```{r LOOIC.table, echo=FALSE, warning=FALSE}
+
+flextable(LOOIC.df) %>% 
+  #hline(i = (nrow(ratio.summary.table)-1)) %>%
+  set_caption(paste0("Comparison of how models fit to the data. Rhat indicates the conversion of Markov chain Monte Carlo, where Rhat < 1.1 is considered to be acceptable. dDIC indicates the difference in deviance information criteria (DIC) value from the smallest DIC value, where the model with smallest DIC is considered best. dLOOIC indicates leave-one-out information criteria, where the smaller values indicate better models. max.pareto indicates the maximum value of Pareto k statistic, which is an index of model fit. Values of Pareto k statistics less than 0.5 are considered acceptable. Values greater than 0.7 indicate ill fit of the model.")) %>%
+  set_table_properties(width = 0.5, layout = "autofit") %>%
+  colformat_double(j = c("Rhat", "dDIC", "dLOOIC", "max.pareto"), digits = 2)
+
+```
+
+
+The best model appears to be log(n) with station-specific sighting probability and year- and season-specific total abundance. This does make sense. 
+
+```{r}
+best.model.name <- LOOIC.df[1,"model"]
+best.model.out <- out.list$jm.out[[which(model.files == best.model.name)]]
+
+```
+
