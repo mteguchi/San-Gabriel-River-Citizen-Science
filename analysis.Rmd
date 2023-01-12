@@ -43,7 +43,7 @@ compute.LOOIC <- function(loglik.mat, data.vector, MCMC.params){
 
 ```
 
-Get data and make numerical months and numerical seasons
+Get data and make numerical months and numerical seasons. Each "year" has to start from December the year before to make sense out of data.
 
 ```{r}
 col.def <- cols(Year = col_integer(),
@@ -56,8 +56,8 @@ col.def <- cols(Year = col_integer(),
 data.0 <- read_csv(file = "data/sightings-1.csv", col_types = col.def) %>%
   mutate(Year_d = Year - min(Year) + 1,
          Month_d = match(Month, month.name),
-         Season_d = match(Season, c("Winter", "Spring", "Summer", "Fall"))) 
-
+         Season_d = match(Season, c("Winter", "Spring", "Summer", "Fall")),
+         Year_idx = ifelse(Month_d < 12, Year_d, Year_d+1)) 
 
 
 ```
@@ -84,7 +84,7 @@ jags.data <- list(n = data.0$Counts,
                   Station = data.0$Station,
                   Season = data.0$Season_d,
                   n.season = 4,
-                  Nmin = 0, Nmax = 150)
+                  Nmin = 0, Nmax = 200)
 
 jags.params <- c("n", "theta", "p", "N", "sd.n", 
                  "deviance", "loglik")
@@ -96,7 +96,9 @@ jags.params <- c("n", "theta", "p", "N", "sd.n",
 # model.file <- "models/model_Pois_p_station_N_year_season.txt"
 # model.file <- "models/model_Pois_p_station_N_year.txt"
 
-model.files <- c("models/model_Pois_p_year_month_station_N_year_season.txt",
+model.files <- data.frame(model.name = c("Pois-1", "POis-2", "Pois-3", "Pois-4", "Pois-5", "Pois-6",
+                                         "Norm-1", "Norm-2", "Norm-3", "Norm-4", "Norm-5", "Norm-6"),
+  model.file = c("models/model_Pois_p_year_month_station_N_year_season.txt",
                  "models/model_Pois_p_year_month_station_N_year.txt",
                  "models/model_Pois_p_year_station_N_year_season.txt",
                  "models/model_Pois_p_year_station_N_year.txt",
@@ -107,23 +109,25 @@ model.files <- c("models/model_Pois_p_year_month_station_N_year_season.txt",
                  "models/model_logN_p_year_station_N_year_season.txt",
                  "models/model_logN_p_year_station_N_year.txt",
                  "models/model_logN_p_station_N_year_season.txt",
-                 "models/model_logN_p_station_N_year.txt")
-
+                 "models/model_logN_p_station_N_year.txt"))
 
 
 jags.fit <- list()
 LOOIC.out <- list()
-out.file.name <- "RData/jags_out.rds"
+#out.file.name <- "RData/jags_out.rds"
 
-if (!file.exists(out.file.name)){
-  k <- 7
-  start.time <- now()
-  for (k in 1:length(model.files)){
-    
+k <- 7
+start.time <- now()
+for (k in 1:nrow(model.files)){
+  out.file.name <-  paste0("RData/jags_out_", model.files[k, "model.name"], ".rds")
+  
+  
+  if (!file.exists(out.file.name)){
+    start.time <- now()  
     jags.fit[[k]] <- jags(jags.data,
                           inits = NULL,
                           parameters.to.save= jags.params,
-                          model.file = model.files[k],
+                          model.file = model.files[k, "model.file"],
                           n.chains = MCMC.params$n.chains,
                           n.burnin = MCMC.params$n.burnin,
                           n.thin = MCMC.params$n.thin,
@@ -133,38 +137,45 @@ if (!file.exists(out.file.name)){
     LOOIC.out[[k]] <- compute.LOOIC(loglik.mat = jags.fit[[k]]$sims.list$loglik,
                                     data.vector = jags.data$n,
                                     MCMC.params = MCMC.params)
+    
+    end.time <- now()
+    
+    out.list <- list(model.names = model.files[k, "model.file"],
+                     jm.out = jags.fit[[k]],
+                     LOOIC.out = LOOIC.out[[k]],
+                     jags.data = jags.data,
+                     jags.params = jags.params,
+                     MCMC.params = MCMC.params,
+                     run.date = Sys.Date(),
+                     system = Sys.info(),
+                     run.time = end.time - start.time)
+    
+    saveRDS(out.list, file = out.file.name)    
+  } else {
+    
+    out.list <- readRDS(out.file.name)
+    
+    jags.fit[[k]] <- out.list$jm.out
+    LOOIC.out[[k]] <- out.list$LOOIC.out
   }
-  end.time <- now()
-  
-  out.list <- list(model.names = model.files,
-                   jm.out = jags.fit,
-                   LOOIC.out = LOOIC.out,
-                   jags.data = jags.data,
-                   jags.params = jags.params,
-                   MCMC.params = MCMC.params,
-                   run.date = Sys.Date(),
-                   system = Sys.info(),
-                   run.time = end.time - start.time)
-  
-  saveRDS(out.list, file = out.file.name)
-} else {
-  
-  out.list <- readRDS(out.file.name)
 }
 
-LOOIC.df <- data.frame(model = out.list$model.names,
-                     DIC = lapply(out.list$jm.out, 
-                                  FUN = function(x) x$DIC) %>% unlist(),
-                     Rhat = lapply(out.list$jm.out, 
-                                   FUN = function(x) x$Rhat %>% unlist() %>% 
-                                     max(na.rm = T)) %>% unlist(),
-                     LOOIC = lapply(out.list$LOOIC.out, 
+LOOIC.df <- data.frame(model = model.files$model.name,
+                       DIC = lapply(jags.fit, 
+                                    FUN = function(x) x$DIC) %>% 
+                         unlist(),
+                       Rhat = lapply(jags.fit, 
+                                     FUN = function(x) x$Rhat %>% 
+                                       unlist() %>% 
+                                       max(na.rm = T)) %>% 
+                         unlist(),
+                       LOOIC = lapply(LOOIC.out, 
                                       FUN = function(x) x$loo.out$estimates["looic", "Estimate"]) %>% 
-                       unlist(),
-                     max.pareto = lapply(out.list$LOOIC.out, 
-                                           FUN = function(x) x$loo.out$diagnostics$pareto_k %>% max()) %>%
-                       unlist()
-                     ) %>%
+                         unlist(),
+                       max.pareto = lapply(LOOIC.out, 
+                                           FUN = function(x) x$loo.out$diagnostics$pareto_k %>% 
+                                             max()) %>%
+                         unlist()) %>%
   mutate(dDIC = DIC - min(DIC),
          dLOOIC = LOOIC - min(LOOIC)) %>%
   select(-c("DIC", "LOOIC")) %>%
@@ -196,5 +207,206 @@ The best model appears to be log(n) with station-specific sighting probability a
 best.model.name <- LOOIC.df[1,"model"]
 best.model.out <- out.list$jm.out[[which(model.files == best.model.name)]]
 
+# Get rid of the big object
+rm(list = "out.list")
+
+# check conversions visually
+mcmc_trace(best.model.out$samples, pars = c("p[1]", "p[2]", "p[3]", "p[4]",
+                                            "p[5]", "p[6]", "p[7]", "p[8]",
+                                            "p[9]", "p[10]"))
+
 ```
+
+```{r}
+mcmc_trace(best.model.out$samples, pars = c("N[1,1]", "N[2,1]", "N[3,1]", "N[4,1]",
+                                            "N[5,1]", "N[6,1]", "N[7,1]", "N[8,1]",
+                                            "N[9,1]"))
+
+```
+
+
+```{r}
+mcmc_trace(best.model.out$samples, pars = c("N[1,2]", "N[2,2]", "N[3,2]", "N[4,2]",
+                                            "N[5,2]", "N[6,2]", "N[7,2]", "N[8,2]",
+                                            "N[9,2]"))
+
+```
+
+
+```{r}
+mcmc_trace(best.model.out$samples, pars = c("N[1,3]", "N[2,3]", "N[3,3]", "N[4,3]",
+                                            "N[5,3]", "N[6,3]", "N[7,3]", "N[8,3]",
+                                            "N[9,3]"))
+
+```
+
+
+```{r}
+mcmc_trace(best.model.out$samples, pars = c("N[1,4]", "N[2,4]", "N[3,4]", "N[4,4]",
+                                            "N[5,4]", "N[6,4]", "N[7,4]", "N[8,4]",
+                                            "N[9,4]"))
+
+```
+
+
+Most look okay but some are pushed against the upper limit. Probably because of lack of data. 
+
+```{r}
+
+mcmc_dens(best.model.out$samples, pars = c("N[1,2]", "N[5,3]", "N[5,4]", "N[6,1]",
+                                            "N[6,3]", "N[7,3]", "N[7,4]"))
+
+```
+
+
+Or.... use multinomial
+
+```{r multinomial, echo=FALSE, message=FALSE}
+compute.LOOIC <- function(loglik.mat, MCMC.params){
+  n.per.chain <- (MCMC.params$n.samples - MCMC.params$n.burnin)/MCMC.params$n.thin
+  
+  #loglik.vec <- as.vector(loglik)
+  
+  Reff <- relative_eff(exp(loglik.mat),
+                       chain_id = rep(1:MCMC.params$n.chains,
+                                      each = n.per.chain),
+                       cores = 4)
+  
+  loo.out <- rstanarm::loo(loglik.mat, 
+                           r_eff = Reff, 
+                           cores = 4, k_threshold = 0.7)
+  
+  out.list <- list(Reff = Reff,
+                   loo.out = loo.out)
+  
+  return(out.list)  
+}
+
+col.def <- cols(Date = col_date(format = "%m/%d/%Y"),
+                Station01 = col_integer(),
+                Station02 = col_integer(),
+                Station03 = col_integer(),
+                Station04 = col_integer(),
+                Station05 = col_integer(),
+                Station06 = col_integer(),
+                Station07 = col_integer(),
+                Station08 = col_integer(),
+                Station09 = col_integer(),
+                Station10 = col_integer())
+
+# month.name is a built-in variable
+data.1 <- read_csv(file = "data/sightings.csv", col_types = col.def) %>%
+  mutate(Month = month(Date),
+         Season_d = ifelse(Month == 1 | Month == 2 | Month == 12, 1,
+                           ifelse(Month > 2 & Month < 6, 2,
+                                  ifelse(Month > 5 & Month < 9, 3, 4))),
+         Year_d = year(Date) - min(year(Date)) + 1,
+         Year_Season_d = (Year_d - 1) * 4 + Season_d,
+         Year_idx = ifelse(Month < 12, Year_d, Year_d + 1)) %>% 
+  na.omit()
+  
+data.1 %>% select(starts_with("Station")) %>%
+  as.matrix() -> Counts
+
+
+jags.data <- list(n = Counts,
+                  N = rowSums(Counts),
+                  n.day = nrow(Counts),
+                  n.year = max(data.1$Year_idx),
+                  Year = data.1$Year_idx,
+                  Season = data.1$Season_d,
+                  Year.Season = data.1$Year_Season_d,
+                  max.Year.Season = max(data.1$Year_Season_d),
+                  alpha = rep(1, times = 10),
+                  pi_N = rep(1, times = 200),
+                  Nmin = 0, Nmax = 200)
+
+jags.params <- c("theta", "p",  
+                 "deviance", "loglik")
+
+model.files <- data.frame(model.name = c("Multi-1", "Multi-2", "Multi-3", "Multi-4"),
+  model.file = c("models/model_multinomial.txt",
+                 "models/model_multinomial_p_year.txt",
+                 "models/model_multinomial_p_season.txt",
+                 "models/model_multinomial_p_year_season.txt"))
+
+
+jags.fit.multi <- list()
+LOOIC.out.multi <- list()
+#out.file.name <- "RData/jags_out.rds"
+
+k <- 7
+
+for (k in 1:nrow(model.files)){
+  out.file.name <-  paste0("RData/jags_out_", model.files[k, "model.name"], ".rds")
+  
+
+  if (!file.exists(out.file.name)){
+    start.time <- now()  
+    jags.fit.multi[[k]] <- jags(jags.data,
+                          inits = NULL,
+                          parameters.to.save= jags.params,
+                          model.file = model.files[k, "model.file"],
+                          n.chains = MCMC.params$n.chains,
+                          n.burnin = MCMC.params$n.burnin,
+                          n.thin = MCMC.params$n.thin,
+                          n.iter = MCMC.params$n.samples,
+                          DIC = T, parallel=T)
+    
+    LOOIC.out.multi[[k]] <- compute.LOOIC(loglik.mat = jags.fit[[k]]$sims.list$loglik,
+                                    MCMC.params = MCMC.params)
+    
+    end.time <- now()
+    
+    out.list <- list(model.names = model.files[k, "model.file"],
+                     jm.out = jags.fit[[k]],
+                     LOOIC.out = LOOIC.out[[k]],
+                     jags.data = jags.data,
+                     jags.params = jags.params,
+                     MCMC.params = MCMC.params,
+                     run.date = Sys.Date(),
+                     system = Sys.info(),
+                     run.time = end.time - start.time)
+    
+    saveRDS(out.list, file = out.file.name)    
+  } else {
+    
+    out.list <- readRDS(out.file.name)
+    
+    jags.fit.multi[[k]] <- out.list$jm.out
+    LOOIC.out.multi[[k]] <- out.list$LOOIC.out
+  }
+}
+
+LOOIC.multi.df <- data.frame(model = model.files$model.name,
+                       DIC = lapply(jags.fit.multi, 
+                                    FUN = function(x) x$DIC) %>% 
+                         unlist(),
+                       Rhat = lapply(jags.fit.multi, 
+                                     FUN = function(x) x$Rhat %>% 
+                                       unlist() %>% 
+                                       max(na.rm = T)) %>% 
+                         unlist(),
+                       LOOIC = lapply(LOOIC.out.multi, 
+                                      FUN = function(x) x$loo.out$estimates["looic", "Estimate"]) %>% 
+                         unlist(),
+                       max.pareto = lapply(LOOIC.out.multi, 
+                                           FUN = function(x) x$loo.out$diagnostics$pareto_k %>% 
+                                             max()) %>%
+                         unlist()) %>%
+  mutate(dDIC = DIC - min(DIC),
+         dLOOIC = LOOIC - min(LOOIC)) %>%
+  select(-c("DIC", "LOOIC")) %>%
+  arrange(dLOOIC) %>% 
+  select(model, Rhat, dDIC, dLOOIC, max.pareto)
+  
+
+# 
+# mcmc_trace(jm$samples, pars = c("p[1,1]", "p[1,2]", "p[1,3]", "p[1,4]",
+#                                 "p[1,5]", "p[1,6]", "p[1,7]", "p[1,8]",
+#                                 "p[1,9]", "p[1,10]"))
+
+```
+
+
 
