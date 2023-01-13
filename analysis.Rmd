@@ -263,6 +263,13 @@ $$ \textbf{n}_{k} \sim multi(N_{k}, \textbf{p}_{k})$$
 $\textbf{n}_{k}$ is a vector of length 10, which contains observed counts at 10 stations on the $k$-th day of observation. $N_k$ is the sum of all observed counts on the same day ($N_k = \sum_{k=1}^{k=10} n_k$.    
 
 ```{r multinomial, echo=FALSE, message=FALSE}
+# restart with everything removed
+rm(list=ls())
+MCMC.params <- list(n.chains = 5,
+                    n.samples = 100000,
+                    n.burnin = 80000,
+                    n.thin = 5)
+
 compute.LOOIC <- function(loglik.mat, MCMC.params){
   n.per.chain <- (MCMC.params$n.samples - MCMC.params$n.burnin)/MCMC.params$n.thin
   
@@ -304,7 +311,7 @@ data.1 <- read_csv(file = "data/sightings.csv", col_types = col.def) %>%
          Year_d = year(Date) - min(year(Date)) + 1,
          Year_idx = ifelse(Month < 12, Year_d, Year_d + 1),
          Year_Season_d = (Year_idx - 1) * 4 + Season_d,
-         Year_Month_d = (Year_idx - 1) * 12 + Month) %>% 
+         Year_Month_d = (Year_d - 1) * 12 + Month) %>% 
   na.omit()
   
 data.1 %>% select(starts_with("Station")) %>%
@@ -318,14 +325,12 @@ jags.data <- list(n = Counts,
                   Year = data.1$Year_idx,
                   Season = data.1$Season_d,
                   Year.Season = data.1$Year_Season_d,
-                  Year.Month = data.1$Year_Month_d,
-                  max.Year.Season = max(data.1$Year_Season_d),
-                  max.Year.Month = max(data.1$Year_Month_d),
-                  alpha = rep(1, times = 10),
-                  pi_N = rep(1, times = 200),
-                  Nmin = 0, Nmax = 200)
+                  Year.Month = seq(1, nrow(Counts)),
+                  max.Year.Season = length(data.1$Year_Season_d),
+                  max.Year.Month = length(data.1$Year_Month_d),
+                  alpha = rep(1, times = 10))
 
-jags.params <- c("theta", "p",  
+jags.params <- c("theta", "p", "N1",  
                  "deviance", "loglik")
 
 model.files <- data.frame(model.name = c("Multi-1", "Multi-2", "Multi-3", "Multi-4", "Multi-5"),
@@ -358,14 +363,14 @@ for (k in 1:nrow(model.files)){
                           n.iter = MCMC.params$n.samples,
                           DIC = T, parallel=T)
     
-    LOOIC.out.multi[[k]] <- compute.LOOIC(loglik.mat = jags.fit[[k]]$sims.list$loglik,
+    LOOIC.out.multi[[k]] <- compute.LOOIC(loglik.mat = jags.fit.multi[[k]]$sims.list$loglik,
                                     MCMC.params = MCMC.params)
     
     end.time <- now()
     
     out.list <- list(model.names = model.files[k, "model.file"],
-                     jm.out = jags.fit[[k]],
-                     LOOIC.out = LOOIC.out[[k]],
+                     jm.out = jags.fit.multi[[k]],
+                     LOOIC.out = LOOIC.out.multi[[k]],
                      jags.data = jags.data,
                      jags.params = jags.params,
                      MCMC.params = MCMC.params,
@@ -423,6 +428,60 @@ flextable(LOOIC.multi.df) %>%
 ```
 
 
-Pareto-k statistics are too high. The "best" model is also the worst fit model to the data. Something needs to be changed... 
+Pareto-k statistics are too high. I'm thinking it too much? Perhaps, go ahead and use just DIC and use the Multi-5 model (Year-Month model) to do inference.
+
+```{r Multi-5, echo=FALSE}
+
+best.model.name <- "Multi-5"
+best.model.out <- jags.fit.multi[[which(model.files$model.name == best.model.name)]]
+
+# Get rid of the big object
+rm(list = "out.list")
+
+# check conversions visually
+mcmc_trace(best.model.out$samples, pars = c("p[1,1]", "p[1,2]", "p[1,3]", "p[1,4]",
+                                            "p[1,5]", "p[1,6]", "p[1,7]", "p[1,8]",
+                                            "p[1,9]", "p[1,10]"))
+
+
+```
+
+Convergence seems to be okay. 
+
+```{r}
+
+p.idx.df <- data.frame(Year_idx = year(data.1$Date),
+                       Month = data.1$Month) 
+
+all.ps.mean <- best.model.out$mean$p 
+colnames(all.ps.mean) <- c("S01", "S02", "S03", "S04", "S05",
+                           "S06", "S07", "S08", "S09", "S10")
+
+all.ps.mean.long <- cbind(p.idx.df, all.ps.mean) %>%
+  pivot_longer(cols = starts_with("S"),
+               names_to = "Station") 
+
+ggplot(all.ps.mean.long) +
+  geom_tile(aes(x = Station, y = Month, fill = value)) +
+  scale_fill_gradient(low="white", high="black") +
+  scale_y_continuous(breaks = c(1,3,5,7,9,11))+
+  theme(axis.text.x =element_text(angle = 90, vjust = 0.5),
+        legend.position = "none") +
+  #labs(fill = "Mean") +
+  facet_wrap(~Year_idx)
+
+# plots_year <- list()
+# 
+# for (k in 1:jags.data$n.year){
+#   plots_year[[k]] <- ggplot(all.ps.mean.long %>% 
+#                               filter(Year_idx == k)) +
+#     geom_tile(aes(y = Month, x = Station, fill = value))
+#   
+# }
+ggsave(filename = "figures/Sighting_proportions.png",
+       dpi = 600, device = "png")
+  
+```
+
 
 

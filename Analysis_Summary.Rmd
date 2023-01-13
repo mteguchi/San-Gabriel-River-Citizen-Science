@@ -1,0 +1,127 @@
+---
+title: "San Gabriel River green turtles"
+author: "Tomo Eguchi"
+date: "2023-01-13"
+output: 
+  bookdown::word_document2: default
+---
+
+```{r setup, message=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(loo)
+library(flextable)
+
+
+set_flextable_defaults(font.size = 9,
+                       font.family = "Cambria")
+
+compute.LOOIC <- function(loglik.mat, MCMC.params){
+  n.per.chain <- (MCMC.params$n.samples - MCMC.params$n.burnin)/MCMC.params$n.thin
+  
+  #loglik.vec <- as.vector(loglik)
+  
+  Reff <- relative_eff(exp(loglik.mat),
+                       chain_id = rep(1:MCMC.params$n.chains,
+                                      each = n.per.chain),
+                       cores = 4)
+  
+  loo.out <- rstanarm::loo(loglik.mat, 
+                           r_eff = Reff, 
+                           cores = 4, k_threshold = 0.7)
+  
+  out.list <- list(Reff = Reff,
+                   loo.out = loo.out)
+  
+  return(out.list)  
+}
+```
+
+## Objectives {.unnumbered}
+
+The objective of the analysis was to determine differences in the number of sightings of green turtles among stations, years, and seasons.
+
+## Methods {.unnumbered}
+
+In order to determine the differences in the number of green turtle sigthings among stations, years, and seasons, we developed a set of statistical models that describe the process of turtle sightings by the research team. The number of sightings at the $i$-th station on the $k$-th day was modeled by the multinomial distribution with the total number of observed sightings during the $k$-th survey day ($N_{k}$) and the proportion of the total for the station ($p_{k,i}$).
+
+$$ \textbf{n}_{k} \sim multi(N_{k}, \textbf{p}_{k})$$
+
+$\textbf{n}_{k}$ is a vector of length 10, which contains observed counts at 10 stations on the $k$-th day of observation. $N_k$ is the sum of all observed counts on the same day ($N_k = \sum_{i=1}^{i=10} n_{k,i}$). $\textbf{p}_{k}$ is a vector of length 10, which contains estimated proportions of sightings at 10 stations ($\sum_{i=1}^{10} p_{k,i} = 1$). We compared models among five possible cases of the proportions (i.e., $\textbf{p}$ vector); (1) sampling day specific, (2) season specific, (3) year specific, (4) year-month specific, and (5) year-season specific. The models were fit to the observed data using the Bayesian approach via JAGS (v.4.3.1; Plummer 2017) and R (v.4.2.2; R Core Team) with the jagsUI package (v.1.5.2, Kellner 2021). Convergence of Marcov chain Monte Carlo was determined using the Rhat statistics (Gelman et al. 2014). Performance of the models were compared using deviance information criteria (DIC). JAGS code for this analysis available upon request.
+
+## Results {.unnumbered}
+
+Because of the modeling approach (i.e., multinomial model), sampling days that did not have data from one or more stations were eliminated. Among the five models that were fit to the remaining data, the fifth model (year-season specific proportions) was considered best (lowest DIC value, Appendix Table \@ref(tab:DIC-table)). Variability among years was large, but in general, stations 2 and 3 had higher mean proportions of sightings among the 10 stations (Figure \@ref(fig:fig-proportions)). In the recent years (2019, 2020, 2021), however, Stations 2 and 3 did not show higher mean proportions than other stations.
+
+```{r results, echo=FALSE, message=FALSE, warning=FALSE}
+# Analysis was done in analysis.Rmd. 
+
+jags.fit.multi <- list()
+LOOIC.out.multi <- list()
+#out.file.name <- "RData/jags_out.rds"
+
+model.files <- data.frame(model.name = c("Multi-1", "Multi-2", "Multi-3", "Multi-4", "Multi-5"),
+  model.file = c("models/model_multinomial.txt",
+                 "models/model_multinomial_p_year.txt",
+                 "models/model_multinomial_p_season.txt",
+                 "models/model_multinomial_p_year_season.txt",
+                 "models/model_multinomial_p_year_Month.txt"))
+
+for (k in 1:nrow(model.files)){
+  out.file.name <-  paste0("RData/jags_out_", model.files[k, "model.name"], ".rds")
+  
+  out.list <- readRDS(out.file.name)
+    
+  jags.fit.multi[[k]] <- out.list$jm.out
+  LOOIC.out.multi[[k]] <- out.list$LOOIC.out
+
+}
+
+LOOIC.multi.df <- data.frame(model = model.files$model.name,
+                       DIC = lapply(jags.fit.multi, 
+                                    FUN = function(x) x$DIC) %>% 
+                         unlist(),
+                       Rhat = lapply(jags.fit.multi, 
+                                     FUN = function(x) x$Rhat %>% 
+                                       unlist() %>% 
+                                       max(na.rm = T)) %>% 
+                         unlist()) %>%
+  mutate(dDIC = DIC - min(DIC)) %>%
+  select(-c("DIC")) %>%
+  arrange(dDIC) %>% 
+  select(model, Rhat, dDIC)
+```
+
+```{r fig-proportions, echo=FALSE, message=FALSE, fig.cap="The mean proportions of sightings of green turtles at 10 observation stations along lower San Gabriel River, CA. Dark colors indicate higher values and vice versa."}
+
+knitr::include_graphics(paste0("figures/Sighting_proportions.png"))
+
+```
+
+```{r DIC-table, echo=FALSE}
+flextable(LOOIC.multi.df) %>% 
+  #hline(i = (nrow(ratio.summary.table)-1)) %>%
+  set_caption(paste0("Comparison of how models fit to the data when using the multinomial distribution. Rhat indicates the conversion of Markov chain Monte Carlo, where Rhat < 1.1 is considered to be acceptable. dDIC indicates the difference in deviance information criteria (DIC) value from the smallest DIC value, where the model with smallest DIC is considered best.")) %>%
+  set_table_properties(width = 0.5, layout = "autofit") %>%
+  colformat_double(j = c("Rhat", "dDIC"), digits = 2)
+
+```
+
+## Literature Cited {-}
+
+Gelman, A, Carlin JB, Stern HS, Dunson DB, Vehtari A, Rubin DB. 2014. Bayesian data analysis. Third Edition. CRC Press. 
+
+Kellner K (2021). jagsUI: A Wrapper Around 'rjags' to Streamline 'JAGS'
+  Analyses_. R package version 1.5.2,
+  <https://CRAN.R-project.org/package=jagsUI>.
+  
+Plummer M. 2017. JAGS Version 4.3 user manual. Available from https://mcmc-jags.sourceforge.io/
+
+R Core Team (2022). R: A language and environment for statistical computing.
+  R Foundation for Statistical Computing, Vienna, Austria. URL
+  https://www.R-project.org/.
+  
+  
