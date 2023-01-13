@@ -69,6 +69,8 @@ $$ n_{y,m,i} \sim f(p_{y,m,i} \times N_{y} \times \theta) $$
 
 Because $n$ are counts, Poisson may be the first candidate model.
 
+It is unclear what abundance the parameter $N$ represents. Because turtles can swim among stations during a survey, it is not the number of turtles. Because N is distributed among stations, it has to represent the number of surfacings. However... if ps don't sum to 1 among stations during a survey day, I'm not sure what this N is. I think the next section with the multinomial distribution makes more sense... 
+
 ```{r}
 MCMC.params <- list(n.chains = 5,
                     n.samples = 100000,
@@ -84,19 +86,12 @@ jags.data <- list(n = data.0$Counts,
                   Station = data.0$Station,
                   Season = data.0$Season_d,
                   n.season = 4,
-                  Nmin = 0, Nmax = 200)
+                  Nmin = 0, Nmax = 250)
 
 jags.params <- c("n", "theta", "p", "N", "sd.n", 
                  "deviance", "loglik")
 
-# model.file <- "models/model_Pois_p_year_month_station_N_year_season.txt"
-# model.file <- "models/model_Pois_p_year_month_station_N_year.txt"
-# model.file <- "models/model_Pois_p_year_station_N_year_season.txt"
-# model.file <- "models/model_Pois_p_year_station_N_year.txt"
-# model.file <- "models/model_Pois_p_station_N_year_season.txt"
-# model.file <- "models/model_Pois_p_station_N_year.txt"
-
-model.files <- data.frame(model.name = c("Pois-1", "POis-2", "Pois-3", "Pois-4", "Pois-5", "Pois-6",
+model.files <- data.frame(model.name = c("Pois-1", "Pois-2", "Pois-3", "Pois-4", "Pois-5", "Pois-6",
                                          "Norm-1", "Norm-2", "Norm-3", "Norm-4", "Norm-5", "Norm-6"),
   model.file = c("models/model_Pois_p_year_month_station_N_year_season.txt",
                  "models/model_Pois_p_year_month_station_N_year.txt",
@@ -205,7 +200,7 @@ The best model appears to be log(n) with station-specific sighting probability a
 
 ```{r}
 best.model.name <- LOOIC.df[1,"model"]
-best.model.out <- out.list$jm.out[[which(model.files == best.model.name)]]
+best.model.out <- jags.fit[[which(model.files$model.name == best.model.name)]]
 
 # Get rid of the big object
 rm(list = "out.list")
@@ -261,6 +256,12 @@ mcmc_dens(best.model.out$samples, pars = c("N[1,2]", "N[5,3]", "N[5,4]", "N[6,1]
 
 Or.... use multinomial
 
+In this approach, the N parameter ($N_{k}$, where k is the index of all sampling days) is considered as the total number of surfacings during a survey period. The total number ($N_{k}$) is distributed among 10 stations, which is modeled with the multinomial distribution.
+
+$$ \textbf{n}_{k} \sim multi(N_{k}, \textbf{p}_{k})$$
+
+$\textbf{n}_{k}$ is a vector of length 10, which contains observed counts at 10 stations on the $k$-th day of observation. $N_k$ is the sum of all observed counts on the same day ($N_k = \sum_{k=1}^{k=10} n_k$.    
+
 ```{r multinomial, echo=FALSE, message=FALSE}
 compute.LOOIC <- function(loglik.mat, MCMC.params){
   n.per.chain <- (MCMC.params$n.samples - MCMC.params$n.burnin)/MCMC.params$n.thin
@@ -301,8 +302,9 @@ data.1 <- read_csv(file = "data/sightings.csv", col_types = col.def) %>%
                            ifelse(Month > 2 & Month < 6, 2,
                                   ifelse(Month > 5 & Month < 9, 3, 4))),
          Year_d = year(Date) - min(year(Date)) + 1,
-         Year_Season_d = (Year_d - 1) * 4 + Season_d,
-         Year_idx = ifelse(Month < 12, Year_d, Year_d + 1)) %>% 
+         Year_idx = ifelse(Month < 12, Year_d, Year_d + 1),
+         Year_Season_d = (Year_idx - 1) * 4 + Season_d,
+         Year_Month_d = (Year_idx - 1) * 12 + Month) %>% 
   na.omit()
   
 data.1 %>% select(starts_with("Station")) %>%
@@ -316,7 +318,9 @@ jags.data <- list(n = Counts,
                   Year = data.1$Year_idx,
                   Season = data.1$Season_d,
                   Year.Season = data.1$Year_Season_d,
+                  Year.Month = data.1$Year_Month_d,
                   max.Year.Season = max(data.1$Year_Season_d),
+                  max.Year.Month = max(data.1$Year_Month_d),
                   alpha = rep(1, times = 10),
                   pi_N = rep(1, times = 200),
                   Nmin = 0, Nmax = 200)
@@ -324,11 +328,12 @@ jags.data <- list(n = Counts,
 jags.params <- c("theta", "p",  
                  "deviance", "loglik")
 
-model.files <- data.frame(model.name = c("Multi-1", "Multi-2", "Multi-3", "Multi-4"),
+model.files <- data.frame(model.name = c("Multi-1", "Multi-2", "Multi-3", "Multi-4", "Multi-5"),
   model.file = c("models/model_multinomial.txt",
                  "models/model_multinomial_p_year.txt",
                  "models/model_multinomial_p_season.txt",
-                 "models/model_multinomial_p_year_season.txt"))
+                 "models/model_multinomial_p_year_season.txt",
+                 "models/model_multinomial_p_year_Month.txt"))
 
 
 jags.fit.multi <- list()
@@ -408,5 +413,16 @@ LOOIC.multi.df <- data.frame(model = model.files$model.name,
 
 ```
 
+```{r}
+flextable(LOOIC.multi.df) %>% 
+  #hline(i = (nrow(ratio.summary.table)-1)) %>%
+  set_caption(paste0("Comparison of how models fit to the data when using the multinomial distribution. Rhat indicates the conversion of Markov chain Monte Carlo, where Rhat < 1.1 is considered to be acceptable. dDIC indicates the difference in deviance information criteria (DIC) value from the smallest DIC value, where the model with smallest DIC is considered best. dLOOIC indicates leave-one-out information criteria, where the smaller values indicate better models. max.pareto indicates the maximum value of Pareto k statistic, which is an index of model fit. Values of Pareto k statistics less than 0.5 are considered acceptable. Values greater than 0.7 indicate ill fit of the model.")) %>%
+  set_table_properties(width = 0.5, layout = "autofit") %>%
+  colformat_double(j = c("Rhat", "dDIC", "dLOOIC", "max.pareto"), digits = 2)
+
+```
+
+
+Pareto-k statistics are too high. The "best" model is also the worst fit model to the data. Something needs to be changed... 
 
 

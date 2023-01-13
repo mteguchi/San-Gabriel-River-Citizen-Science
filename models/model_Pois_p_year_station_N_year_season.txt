@@ -9,7 +9,7 @@ model{
 		n[k] ~ dpois(mu.n[k])
 		
 		# This model has year- station-specific ps
-		mu.n[k] <- p[Year[k], Station[k]] * theta * N[Year[k], Season[k]]
+		log(mu.n[k]) <- log(p[Year[k], Station[k]]) + log(theta) + log(N[Year[k], Season[k]])
 	
 		loglik[k] <- logdensity.pois(n[k], mu.n[k])
 	}

@@ -8,8 +8,7 @@ model{
 	for (k in 1:n.line){
 		n[k] ~ dpois(mu.n[k])
 		
-		# This model has year- month- station-specific ps
-		mu.n[k] <- p[Station[k]] * theta * N[Year[k]]
+		log(mu.n[k]) <- log(p[Station[k]]) + log(theta) + log(N[Year[k]])
 	
 		loglik[k] <- logdensity.pois(n[k], mu.n[k])
 	}

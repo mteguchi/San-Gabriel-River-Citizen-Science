@@ -9,7 +9,7 @@ model{
 		n[k] ~ dpois(mu.n[k])
 		
 		# This model has station-specific ps
-		mu.n[k] <- p[Station[k]] * theta * N[Year[k]]
+		log(mu.n[k]) <- log(p[Station[k]]) + log(theta) + log(N[Year[k]])
 	
 	}
 
@@ -18,11 +18,11 @@ model{
 	for (y in 1:n.year){
 		N[y] ~ dunif(Nmin, Nmax)
 	
-		for (m in 1:12){
-			for (i in 1:10){
-				p[y,m,i] ~ dbeta(1,1)
-			}
-		}
 	}
+
+	for (i in 1:10){
+		p[i] ~ dbeta(1,1)
+	}
+
 
 }
